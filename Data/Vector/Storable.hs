@@ -1,4 +1,5 @@
 {-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, TypeFamilies, Rank2Types, ScopedTypeVariables #-}
+{-# LANGUAGE FlexibleContexts, UndecidableInstances #-}
 
 -- |
 -- Module      : Data.Vector.Storable
@@ -141,6 +142,10 @@ import           Data.Vector.Storable.Mutable ( MVector(..) )
 import Data.Vector.Storable.Internal
 import qualified Data.Vector.Fusion.Bundle as Bundle
 
+#if defined(__GLASGOW_HASKELL_LLVM__)
+import Data.Primitive.Multi
+#endif /* defined(__GLASGOW_HASKELL_LLVM__) */
+
 import Foreign.Storable
 import Foreign.ForeignPtr
 import Foreign.Ptr
@@ -226,6 +231,15 @@ instance Storable a => G.Vector Vector a where
 
   {-# INLINE elemseq #-}
   elemseq _ = seq
+
+#if defined(__GLASGOW_HASKELL_LLVM__)
+instance (Storable a, MultiPrim a, Storable (Multi a))
+  => G.PackedVector Vector a where
+  {-# INLINE basicUnsafeIndexAsMultiM #-}
+  basicUnsafeIndexAsMultiM (Vector _ fp) i
+    = return . unsafeInlineIO
+    $ withForeignPtr fp $ \p -> peekByteOff p (i * sizeOf (undefined :: a))
+#endif /* defined(__GLASGOW_HASKELL_LLVM__) */
 
 -- See http://trac.haskell.org/vector/ticket/12
 instance (Storable a, Eq a) => Eq (Vector a) where
