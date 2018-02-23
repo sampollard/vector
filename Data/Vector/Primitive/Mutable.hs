@@ -44,6 +44,7 @@ module Data.Vector.Primitive.Mutable (
   unsafeRead, unsafeWrite, unsafeModify, unsafeSwap,
 
   -- * Modifying vectors
+  nextPermutation,
 
   -- ** Filling and copying
   set, copy, move, unsafeCopy, unsafeMove
@@ -52,6 +53,7 @@ module Data.Vector.Primitive.Mutable (
 import qualified Data.Vector.Generic.Mutable as G
 import           Data.Primitive.ByteArray
 import           Data.Primitive ( Prim, sizeOf )
+import           Data.Word ( Word8 )
 import           Control.Monad.Primitive
 import           Control.Monad ( liftM )
 
@@ -98,6 +100,13 @@ instance Prim a => G.MVector MVector a where
     where
       size = sizeOf (undefined :: a)
       mx = maxBound `div` size :: Int
+
+  {-# INLINE basicInitialize #-}
+  basicInitialize (MVector off n v) =
+      setByteArray v (off * size) (n * size) (0 :: Word8)
+    where
+      size = sizeOf (undefined :: a)
+
 
   {-# INLINE basicUnsafeRead #-}
   basicUnsafeRead (MVector i _ arr) j = readByteArray arr (i+j)
@@ -203,7 +212,7 @@ new :: (PrimMonad m, Prim a) => Int -> m (MVector (PrimState m) a)
 {-# INLINE new #-}
 new = G.new
 
--- | Create a mutable vector of the given length. The length is not checked.
+-- | Create a mutable vector of the given length. The memory is not initialized.
 unsafeNew :: (PrimMonad m, Prim a) => Int -> m (MVector (PrimState m) a)
 {-# INLINE unsafeNew #-}
 unsafeNew = G.unsafeNew
@@ -309,7 +318,9 @@ set = G.set
 -- | Copy a vector. The two vectors must have the same length and may not
 -- overlap.
 copy :: (PrimMonad m, Prim a)
-                 => MVector (PrimState m) a -> MVector (PrimState m) a -> m ()
+     => MVector (PrimState m) a   -- ^ target
+     -> MVector (PrimState m) a   -- ^ source
+     -> m ()
 {-# INLINE copy #-}
 copy = G.copy
 
@@ -348,3 +359,8 @@ unsafeMove :: (PrimMonad m, Prim a)
 {-# INLINE unsafeMove #-}
 unsafeMove = G.unsafeMove
 
+-- | Compute the next (lexicographically) permutation of given vector in-place.
+--   Returns False when input is the last permutation
+nextPermutation :: (PrimMonad m,Ord e,Prim e) => MVector (PrimState m) e -> m Bool
+{-# INLINE nextPermutation #-}
+nextPermutation = G.nextPermutation

@@ -56,10 +56,11 @@ module Data.Vector (
   empty, singleton, replicate, generate, iterateN,
 
   -- ** Monadic initialisation
-  replicateM, generateM, create,
+  replicateM, generateM, iterateNM, create, createT,
 
   -- ** Unfolding
   unfoldr, unfoldrN,
+  unfoldrM, unfoldrNM,
   constructN, constructrN,
 
   -- ** Enumeration
@@ -112,11 +113,13 @@ module Data.Vector (
   -- * Working with predicates
 
   -- ** Filtering
-  filter, ifilter, filterM,
+  filter, ifilter, uniq,
+  mapMaybe, imapMaybe,
+  filterM,
   takeWhile, dropWhile,
 
   -- ** Partitioning
-  partition, unstablePartition, span, break,
+  partition, unstablePartition, partitionWith, span, break,
 
   -- ** Searching
   elem, notElem, find, findIndex, findIndices, elemIndex, elemIndices,
@@ -143,9 +146,11 @@ module Data.Vector (
   prescanl, prescanl',
   postscanl, postscanl',
   scanl, scanl', scanl1, scanl1',
+  iscanl, iscanl',
   prescanr, prescanr',
   postscanr, postscanr',
   scanr, scanr', scanr1, scanr1',
+  iscanr, iscanr',
 
   -- * Conversions
 
@@ -169,6 +174,9 @@ import Control.Monad ( MonadPlus(..), liftM, ap )
 import Control.Monad.ST ( ST )
 import Control.Monad.Primitive
 
+
+import Control.Monad.Zip
+
 import Prelude hiding ( length, null,
                         replicate, (++), concat,
                         head, last,
@@ -183,14 +191,22 @@ import Prelude hiding ( length, null,
                         enumFromTo, enumFromThenTo,
                         mapM, mapM_, sequence, sequence_ )
 
-import Data.Typeable ( Typeable )
-import Data.Data     ( Data(..) )
-import Text.Read     ( Read(..), readListPrecDefault )
+#if MIN_VERSION_base(4,9,0)
+import Data.Functor.Classes (Eq1 (..), Ord1 (..), Read1 (..), Show1 (..))
+#endif
 
-import Data.Monoid   ( Monoid(..) )
+import Data.Typeable  ( Typeable )
+import Data.Data      ( Data(..) )
+import Text.Read      ( Read(..), readListPrecDefault )
+import Data.Semigroup ( Semigroup(..) )
+
 import qualified Control.Applicative as Applicative
 import qualified Data.Foldable as Foldable
 import qualified Data.Traversable as Traversable
+
+#if !MIN_VERSION_base(4,8,0)
+import Data.Monoid   ( Monoid(..) )
+#endif
 
 #if __GLASGOW_HASKELL__ >= 708
 import qualified GHC.Exts as Exts (IsList(..))
@@ -215,6 +231,14 @@ instance Show a => Show (Vector a) where
 instance Read a => Read (Vector a) where
   readPrec = G.readPrec
   readListPrec = readListPrecDefault
+
+#if MIN_VERSION_base(4,9,0)
+instance Show1 Vector where
+    liftShowsPrec = G.liftShowsPrec
+
+instance Read1 Vector where
+    liftReadsPrec = G.liftReadsPrec
+#endif
 
 #if __GLASGOW_HASKELL__ >= 708
 
@@ -281,6 +305,21 @@ instance Ord a => Ord (Vector a) where
   {-# INLINE (>=) #-}
   xs >= ys = Bundle.cmp (G.stream xs) (G.stream ys) /= LT
 
+#if MIN_VERSION_base(4,9,0)
+instance Eq1 Vector where
+  liftEq eq xs ys = Bundle.eqBy eq (G.stream xs) (G.stream ys)
+
+instance Ord1 Vector where
+  liftCompare cmp xs ys = Bundle.cmpBy cmp (G.stream xs) (G.stream ys)
+#endif
+
+instance Semigroup (Vector a) where
+  {-# INLINE (<>) #-}
+  (<>) = (++)
+
+  {-# INLINE sconcat #-}
+  sconcat = G.concatNE
+
 instance Monoid (Vector a) where
   {-# INLINE mempty #-}
   mempty = empty
@@ -297,7 +336,7 @@ instance Functor Vector where
 
 instance Monad Vector where
   {-# INLINE return #-}
-  return = singleton
+  return = Applicative.pure
 
   {-# INLINE (>>=) #-}
   (>>=) = flip concatMap
@@ -311,6 +350,17 @@ instance MonadPlus Vector where
 
   {-# INLINE mplus #-}
   mplus = (++)
+
+instance MonadZip Vector where
+  {-# INLINE mzip #-}
+  mzip = zip
+
+  {-# INLINE mzipWith #-}
+  mzipWith = zipWith
+
+  {-# INLINE munzip #-}
+  munzip = unzip
+
 
 instance Applicative.Applicative Vector where
   {-# INLINE pure #-}
@@ -339,6 +389,40 @@ instance Foldable.Foldable Vector where
   {-# INLINE foldl1 #-}
   foldl1 = foldl1
 
+#if MIN_VERSION_base(4,6,0)
+  {-# INLINE foldr' #-}
+  foldr' = foldr'
+
+  {-# INLINE foldl' #-}
+  foldl' = foldl'
+#endif
+
+#if MIN_VERSION_base(4,8,0)
+  {-# INLINE toList #-}
+  toList = toList
+
+  {-# INLINE length #-}
+  length = length
+
+  {-# INLINE null #-}
+  null = null
+
+  {-# INLINE elem #-}
+  elem = elem
+
+  {-# INLINE maximum #-}
+  maximum = maximum
+
+  {-# INLINE minimum #-}
+  minimum = minimum
+
+  {-# INLINE sum #-}
+  sum = sum
+
+  {-# INLINE product #-}
+  product = product
+#endif
+
 instance Traversable.Traversable Vector where
   {-# INLINE traverse #-}
   traverse f xs = Data.Vector.fromList Applicative.<$> Traversable.traverse f (toList xs)
@@ -352,12 +436,12 @@ instance Traversable.Traversable Vector where
 -- Length information
 -- ------------------
 
--- | /O(1)/ Yield the length of the vector.
+-- | /O(1)/ Yield the length of the vector
 length :: Vector a -> Int
 {-# INLINE length #-}
 length = G.length
 
--- | /O(1)/ Test whether a vector if empty
+-- | /O(1)/ Test whether a vector is empty
 null :: Vector a -> Bool
 {-# INLINE null #-}
 null = G.null
@@ -575,8 +659,8 @@ unfoldr :: (b -> Maybe (a, b)) -> b -> Vector a
 {-# INLINE unfoldr #-}
 unfoldr = G.unfoldr
 
--- | /O(n)/ Construct a vector with at most @n@ by repeatedly applying the
--- generator function to the a seed. The generator function yields 'Just' the
+-- | /O(n)/ Construct a vector with at most @n@ elements by repeatedly applying
+-- the generator function to a seed. The generator function yields 'Just' the
 -- next element and the new seed or 'Nothing' if there are no more elements.
 --
 -- > unfoldrN 3 (\n -> Just (n,n-1)) 10 = <10,9,8>
@@ -584,10 +668,26 @@ unfoldrN :: Int -> (b -> Maybe (a, b)) -> b -> Vector a
 {-# INLINE unfoldrN #-}
 unfoldrN = G.unfoldrN
 
+-- | /O(n)/ Construct a vector by repeatedly applying the monadic
+-- generator function to a seed. The generator function yields 'Just'
+-- the next element and the new seed or 'Nothing' if there are no more
+-- elements.
+unfoldrM :: (Monad m) => (b -> m (Maybe (a, b))) -> b -> m (Vector a)
+{-# INLINE unfoldrM #-}
+unfoldrM = G.unfoldrM
+
+-- | /O(n)/ Construct a vector by repeatedly applying the monadic
+-- generator function to a seed. The generator function yields 'Just'
+-- the next element and the new seed or 'Nothing' if there are no more
+-- elements.
+unfoldrNM :: (Monad m) => Int -> (b -> m (Maybe (a, b))) -> b -> m (Vector a)
+{-# INLINE unfoldrNM #-}
+unfoldrNM = G.unfoldrNM
+
 -- | /O(n)/ Construct a vector with @n@ elements by repeatedly applying the
 -- generator function to the already constructed part of the vector.
 --
--- > constructN 3 f = let a = f <> ; b = f <a> ; c = f <a,b> in f <a,b,c>
+-- > constructN 3 f = let a = f <> ; b = f <a> ; c = f <a,b> in <a,b,c>
 --
 constructN :: Int -> (Vector a -> a) -> Vector a
 {-# INLINE constructN #-}
@@ -597,7 +697,7 @@ constructN = G.constructN
 -- repeatedly applying the generator function to the already constructed part
 -- of the vector.
 --
--- > constructrN 3 f = let a = f <> ; b = f<a> ; c = f <b,a> in f <c,b,a>
+-- > constructrN 3 f = let a = f <> ; b = f<a> ; c = f <b,a> in <c,b,a>
 --
 constructrN :: Int -> (Vector a -> a) -> Vector a
 {-# INLINE constructrN #-}
@@ -677,6 +777,11 @@ generateM :: Monad m => Int -> (Int -> m a) -> m (Vector a)
 {-# INLINE generateM #-}
 generateM = G.generateM
 
+-- | /O(n)/ Apply monadic function n times to value. Zeroth element is original value.
+iterateNM :: Monad m => Int -> (a -> m a) -> a -> m (Vector a)
+{-# INLINE iterateNM #-}
+iterateNM = G.iterateNM
+
 -- | Execute the monadic action and freeze the resulting vector.
 --
 -- @
@@ -686,6 +791,11 @@ create :: (forall s. ST s (MVector s a)) -> Vector a
 {-# INLINE create #-}
 -- NOTE: eta-expanded due to http://hackage.haskell.org/trac/ghc/ticket/4120
 create p = G.create p
+
+-- | Execute the monadic action and freeze the resulting vectors.
+createT :: Traversable.Traversable f => (forall s. ST s (f (MVector s a))) -> f (Vector a)
+{-# INLINE createT #-}
+createT p = G.createT p
 
 
 
@@ -917,7 +1027,7 @@ imapM_ :: Monad m => (Int -> a -> m b) -> Vector a -> m ()
 imapM_ = G.imapM_
 
 -- | /O(n)/ Apply the monadic action to all elements of the vector, yielding a
--- vector of results. Equvalent to @flip 'mapM'@.
+-- vector of results. Equivalent to @flip 'mapM'@.
 forM :: Monad m => Vector a -> (a -> m b) -> m (Vector b)
 {-# INLINE forM #-}
 forM = G.forM
@@ -1079,6 +1189,21 @@ ifilter :: (Int -> a -> Bool) -> Vector a -> Vector a
 {-# INLINE ifilter #-}
 ifilter = G.ifilter
 
+-- | /O(n)/ Drop repeated adjacent elements.
+uniq :: (Eq a) => Vector a -> Vector a
+{-# INLINE uniq #-}
+uniq = G.uniq
+
+-- | /O(n)/ Drop elements when predicate returns Nothing
+mapMaybe :: (a -> Maybe b) -> Vector a -> Vector b
+{-# INLINE mapMaybe #-}
+mapMaybe = G.mapMaybe
+
+-- | /O(n)/ Drop elements when predicate, applied to index and value, returns Nothing
+imapMaybe :: (Int -> a -> Maybe b) -> Vector a -> Vector b
+{-# INLINE imapMaybe #-}
+imapMaybe = G.imapMaybe
+
 -- | /O(n)/ Drop elements that do not satisfy the monadic predicate
 filterM :: Monad m => (a -> m Bool) -> Vector a -> m (Vector a)
 {-# INLINE filterM #-}
@@ -1114,6 +1239,13 @@ partition = G.partition
 unstablePartition :: (a -> Bool) -> Vector a -> (Vector a, Vector a)
 {-# INLINE unstablePartition #-}
 unstablePartition = G.unstablePartition
+
+-- | /O(n)/ Split the vector in two parts, the first one containing the
+--   @Right@ elements and the second containing the @Left@ elements.
+--   The relative order of the elements is preserved.
+partitionWith :: (a -> Either b c) -> Vector a -> (Vector b, Vector c)
+{-# INLINE partitionWith #-}
+partitionWith = G.partitionWith
 
 -- | /O(n)/ Split the vector into the longest prefix of elements that satisfy
 -- the predicate and the rest without copying.
@@ -1453,6 +1585,16 @@ scanl' :: (a -> b -> a) -> a -> Vector b -> Vector a
 {-# INLINE scanl' #-}
 scanl' = G.scanl'
 
+-- | /O(n)/ Scan over a vector with its index
+iscanl :: (Int -> a -> b -> a) -> a -> Vector b -> Vector a
+{-# INLINE iscanl #-}
+iscanl = G.iscanl
+
+-- | /O(n)/ Scan over a vector (strictly) with its index
+iscanl' :: (Int -> a -> b -> a) -> a -> Vector b -> Vector a
+{-# INLINE iscanl' #-}
+iscanl' = G.iscanl'
+
 -- | /O(n)/ Scan over a non-empty vector
 --
 -- > scanl f <x1,...,xn> = <y1,...,yn>
@@ -1502,6 +1644,16 @@ scanr = G.scanr
 scanr' :: (a -> b -> b) -> b -> Vector a -> Vector b
 {-# INLINE scanr' #-}
 scanr' = G.scanr'
+
+-- | /O(n)/ Right-to-left scan over a vector with its index
+iscanr :: (Int -> a -> b -> b) -> b -> Vector a -> Vector b
+{-# INLINE iscanr #-}
+iscanr = G.iscanr
+
+-- | /O(n)/ Right-to-left scan over a vector (strictly) with its index
+iscanr' :: (Int -> a -> b -> b) -> b -> Vector a -> Vector b
+{-# INLINE iscanr' #-}
+iscanr' = G.iscanr'
 
 -- | /O(n)/ Right-to-left scan over a non-empty vector
 scanr1 :: (a -> a -> a) -> Vector a -> Vector a
@@ -1572,4 +1724,3 @@ unsafeCopy = G.unsafeCopy
 copy :: PrimMonad m => MVector (PrimState m) a -> Vector a -> m ()
 {-# INLINE copy #-}
 copy = G.copy
-

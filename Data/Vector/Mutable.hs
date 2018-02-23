@@ -44,6 +44,7 @@ module Data.Vector.Mutable (
   unsafeRead, unsafeWrite, unsafeModify, unsafeSwap,
 
   -- * Modifying vectors
+  nextPermutation,
 
   -- ** Filling and copying
   set, copy, move, unsafeCopy, unsafeMove
@@ -54,7 +55,7 @@ import qualified Data.Vector.Generic.Mutable as G
 import           Data.Primitive.Array
 import           Control.Monad.Primitive
 
-import Prelude hiding ( length, null, replicate, reverse, map, read,
+import Prelude hiding ( length, null, replicate, reverse, read,
                         take, drop, splitAt, init, tail )
 
 import Data.Typeable ( Typeable )
@@ -99,6 +100,10 @@ instance G.MVector MVector a where
     = do
         arr <- newArray n uninitialised
         return (MVector 0 n arr)
+
+  {-# INLINE basicInitialize #-}
+  -- initialization is unnecessary for boxed vectors
+  basicInitialize _ = return ()
 
   {-# INLINE basicUnsafeReplicate #-}
   basicUnsafeReplicate n x
@@ -264,7 +269,7 @@ new :: PrimMonad m => Int -> m (MVector (PrimState m) a)
 {-# INLINE new #-}
 new = G.new
 
--- | Create a mutable vector of the given length. The length is not checked.
+-- | Create a mutable vector of the given length. The memory is not initialized.
 unsafeNew :: PrimMonad m => Int -> m (MVector (PrimState m) a)
 {-# INLINE unsafeNew #-}
 unsafeNew = G.unsafeNew
@@ -404,3 +409,8 @@ unsafeMove :: PrimMonad m => MVector (PrimState m) a   -- ^ target
 {-# INLINE unsafeMove #-}
 unsafeMove = G.unsafeMove
 
+-- | Compute the next (lexicographically) permutation of given vector in-place.
+--   Returns False when input is the last permutation
+nextPermutation :: (PrimMonad m,Ord e) => MVector (PrimState m) e -> m Bool
+{-# INLINE nextPermutation #-}
+nextPermutation = G.nextPermutation

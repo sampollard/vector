@@ -73,7 +73,7 @@ module Data.Vector.Fusion.Bundle (
   -- * Monadic combinators
   mapM, mapM_, zipWithM, zipWithM_, filterM, foldM, fold1M, foldM', fold1M',
 
-  eq, cmp
+  eq, cmp, eqBy, cmpBy
 ) where
 
 import Data.Vector.Generic.Base ( Vector )
@@ -98,6 +98,10 @@ import Prelude hiding ( length, null,
                         enumFromTo, enumFromThenTo,
                         mapM, mapM_ )
 
+#if MIN_VERSION_base(4,9,0)
+import Data.Functor.Classes (Eq1 (..), Ord1 (..))
+#endif
+
 import GHC.Base ( build )
 
 -- Data.Vector.Internal.Check is unused
@@ -111,7 +115,7 @@ type Bundle = M.Bundle Id
 type MBundle = M.Bundle
 
 inplace :: (forall m. Monad m => S.Stream m a -> S.Stream m b)
-	-> (Size -> Size) -> Bundle v a -> Bundle v b
+        -> (Size -> Size) -> Bundle v a -> Bundle v b
 {-# INLINE_FUSED inplace #-}
 inplace f g b = b `seq` M.fromStream (f (M.elements b)) (g (M.size b))
 
@@ -486,14 +490,22 @@ scanl1' = M.scanl1'
 -- -----------
 
 -- | Check if two 'Bundle's are equal
-eq :: Eq a => Bundle v a -> Bundle v a -> Bool
+eq :: (Eq a) => Bundle v a -> Bundle v a -> Bool
 {-# INLINE eq #-}
-eq x y = unId (M.eq x y)
+eq = eqBy (==)
+
+eqBy :: (a -> b -> Bool) -> Bundle v a -> Bundle v b -> Bool
+{-# INLINE eqBy #-}
+eqBy e x y = unId (M.eqBy e x y)
 
 -- | Lexicographically compare two 'Bundle's
-cmp :: Ord a => Bundle v a -> Bundle v a -> Ordering
+cmp :: (Ord a) => Bundle v a -> Bundle v a -> Ordering
 {-# INLINE cmp #-}
-cmp x y = unId (M.cmp x y)
+cmp = cmpBy compare
+
+cmpBy :: (a ->  b -> Ordering) -> Bundle v a -> Bundle v b -> Ordering
+{-# INLINE cmpBy #-}
+cmpBy c x y = unId (M.cmpBy c x y)
 
 instance Eq a => Eq (M.Bundle Id v a) where
   {-# INLINE (==) #-}
@@ -502,6 +514,16 @@ instance Eq a => Eq (M.Bundle Id v a) where
 instance Ord a => Ord (M.Bundle Id v a) where
   {-# INLINE compare #-}
   compare = cmp
+
+#if MIN_VERSION_base(4,9,0)
+instance Eq1 (M.Bundle Id v) where
+  {-# INLINE liftEq #-}
+  liftEq = eqBy
+
+instance Ord1 (M.Bundle Id v) where
+  {-# INLINE liftCompare #-}
+  liftCompare = cmpBy
+#endif
 
 -- Monadic combinators
 -- -------------------

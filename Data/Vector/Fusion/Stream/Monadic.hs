@@ -37,10 +37,10 @@ module Data.Vector.Fusion.Stream.Monadic (
   zip, zip3, zip4, zip5, zip6,
 
   -- * Comparisons
-  eq, cmp,
+  eqBy, cmpBy,
 
   -- * Filtering
-  filter, filterM, takeWhile, takeWhileM, dropWhile, dropWhileM,
+  filter, filterM, uniq, mapMaybe, takeWhile, takeWhileM, dropWhile, dropWhileM,
 
   -- * Searching
   elem, notElem, find, findM, findIndex, findIndexM,
@@ -89,19 +89,31 @@ import Prelude hiding ( length, null,
                         scanl, scanl1,
                         enumFromTo, enumFromThenTo )
 
-import Data.Int  ( Int8, Int16, Int32, Int64 )
-import Data.Word ( Word8, Word16, Word32, Word, Word64 )
+import Data.Int  ( Int8, Int16, Int32 )
+import Data.Word ( Word8, Word16, Word32, Word64 )
 
-#if __GLASGOW_HASKELL__ >= 700
+#if !MIN_VERSION_base(4,8,0)
+import Data.Word ( Word8, Word16, Word32, Word, Word64 )
+#endif
+
+#if __GLASGOW_HASKELL__ >= 708
+import GHC.Types ( SPEC(..) )
+#elif __GLASGOW_HASKELL__ >= 700
 import GHC.Exts ( SpecConstrAnnotation(..) )
 #endif
 
 #include "vector.h"
 #include "MachDeps.h"
 
+#if WORD_SIZE_IN_BITS > 32
+import Data.Int  ( Int64 )
+#endif
+
+#if __GLASGOW_HASKELL__ < 708
 data SPEC = SPEC | SPEC2
 #if __GLASGOW_HASKELL__ >= 700
 {-# ANN type SPEC ForceSpecConstr #-}
+#endif
 #endif
 
 emptyStream :: String
@@ -613,9 +625,9 @@ zip6 = zipWith6 (,,,,,)
 -- -----------
 
 -- | Check if two 'Stream's are equal
-eq :: (Monad m, Eq a) => Stream m a -> Stream m a -> m Bool
-{-# INLINE_FUSED eq #-}
-eq (Stream step1 t1) (Stream step2 t2) = eq_loop0 SPEC t1 t2
+eqBy :: (Monad m) => (a -> b -> Bool) -> Stream m a -> Stream m b -> m Bool
+{-# INLINE_FUSED eqBy #-}
+eqBy eq (Stream step1 t1) (Stream step2 t2) = eq_loop0 SPEC t1 t2
   where
     eq_loop0 !_ s1 s2 = do
       r <- step1 s1
@@ -628,7 +640,7 @@ eq (Stream step1 t1) (Stream step2 t2) = eq_loop0 SPEC t1 t2
       r <- step2 s2
       case r of
         Yield y s2'
-          | x == y    -> eq_loop0 SPEC   s1 s2'
+          | eq x y    -> eq_loop0 SPEC   s1 s2'
           | otherwise -> return False
         Skip    s2'   -> eq_loop1 SPEC x s1 s2'
         Done          -> return False
@@ -641,9 +653,9 @@ eq (Stream step1 t1) (Stream step2 t2) = eq_loop0 SPEC t1 t2
         Done      -> return True
 
 -- | Lexicographically compare two 'Stream's
-cmp :: (Monad m, Ord a) => Stream m a -> Stream m a -> m Ordering
-{-# INLINE_FUSED cmp #-}
-cmp (Stream step1 t1) (Stream step2 t2) = cmp_loop0 SPEC t1 t2
+cmpBy :: (Monad m) => (a -> b -> Ordering) -> Stream m a -> Stream m b -> m Ordering
+{-# INLINE_FUSED cmpBy #-}
+cmpBy cmp (Stream step1 t1) (Stream step2 t2) = cmp_loop0 SPEC t1 t2
   where
     cmp_loop0 !_ s1 s2 = do
       r <- step1 s1
@@ -655,7 +667,7 @@ cmp (Stream step1 t1) (Stream step2 t2) = cmp_loop0 SPEC t1 t2
     cmp_loop1 !_ x s1 s2 = do
       r <- step2 s2
       case r of
-        Yield y s2' -> case x `compare` y of
+        Yield y s2' -> case x `cmp` y of
                          EQ -> cmp_loop0 SPEC s1 s2'
                          c  -> return c
         Skip    s2' -> cmp_loop1 SPEC x s1 s2'
@@ -676,6 +688,21 @@ filter :: Monad m => (a -> Bool) -> Stream m a -> Stream m a
 {-# INLINE filter #-}
 filter f = filterM (return . f)
 
+mapMaybe :: Monad m => (a -> Maybe b) -> Stream m a -> Stream m b
+{-# INLINE_FUSED mapMaybe #-}
+mapMaybe f (Stream step t) = Stream step' t
+  where
+    {-# INLINE_INNER step' #-}
+    step' s = do
+                r <- step s
+                case r of
+                  Yield x s' -> do
+                                  return $ case f x of
+                                    Nothing -> Skip s'
+                                    Just b' -> Yield b' s'
+                  Skip    s' -> return $ Skip s'
+                  Done       -> return $ Done
+
 -- | Drop elements which do not satisfy the monadic predicate
 filterM :: Monad m => (a -> m Bool) -> Stream m a -> Stream m a
 {-# INLINE_FUSED filterM #-}
@@ -691,6 +718,24 @@ filterM f (Stream step t) = Stream step' t
                                                 else Skip    s'
                   Skip    s' -> return $ Skip s'
                   Done       -> return $ Done
+
+-- | Drop repeated adjacent elements.
+uniq :: (Eq a, Monad m) => Stream m a -> Stream m a
+{-# INLINE_FUSED uniq #-}
+uniq (Stream step st) = Stream step' (Nothing,st)
+  where
+    {-# INLINE_INNER step' #-}
+    step' (Nothing, s) = do r <- step s
+                            case r of
+                              Yield x s' -> return $ Yield x (Just x , s')
+                              Skip  s'   -> return $ Skip  (Nothing, s')
+                              Done       -> return   Done
+    step' (Just x0, s) = do r <- step s
+                            case r of
+                              Yield x s' | x == x0   -> return $ Skip    (Just x0, s')
+                                         | otherwise -> return $ Yield x (Just x , s')
+                              Skip  s'   -> return $ Skip (Just x0, s')
+                              Done       -> return   Done
 
 -- | Longest prefix of elements that satisfy the predicate
 takeWhile :: Monad m => (a -> Bool) -> Stream m a -> Stream m a
@@ -1399,6 +1444,8 @@ enumFromTo_big_word x y = x `seq` y `seq` Stream step x
 
 
 
+#if WORD_SIZE_IN_BITS > 32
+
 -- FIXME: the "too large" test is totally wrong
 enumFromTo_big_int :: (Integral a, Monad m) => a -> a -> Stream m a
 {-# INLINE_FUSED enumFromTo_big_int #-}
@@ -1407,8 +1454,6 @@ enumFromTo_big_int x y = x `seq` y `seq` Stream step x
     {-# INLINE_INNER step #-}
     step z | z <= y    = return $ Yield z (z+1)
            | otherwise = return $ Done
-
-#if WORD_SIZE_IN_BITS > 32
 
 {-# RULES
 

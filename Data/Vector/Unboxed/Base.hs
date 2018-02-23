@@ -1,6 +1,9 @@
-{-# LANGUAGE CPP, MultiParamTypeClasses, TypeFamilies, FlexibleContexts #-}
+{-# LANGUAGE BangPatterns, CPP, MultiParamTypeClasses, TypeFamilies, FlexibleContexts #-}
 #if __GLASGOW_HASKELL__ >= 707
 {-# LANGUAGE DeriveDataTypeable, StandaloneDeriving #-}
+#endif
+#if __GLASGOW_HASKELL__ >= 706
+{-# LANGUAGE PolyKinds #-}
 #endif
 {-# OPTIONS_HADDOCK hide #-}
 
@@ -25,28 +28,43 @@ import qualified Data.Vector.Generic.Mutable as M
 
 import qualified Data.Vector.Primitive as P
 
-import Control.DeepSeq ( NFData )
+import Control.Applicative (Const(..))
+
+import Control.DeepSeq ( NFData(rnf) )
 
 import Control.Monad.Primitive
 import Control.Monad ( liftM )
 
-import Data.Word ( Word, Word8, Word16, Word32, Word64 )
+#if MIN_VERSION_base(4,8,0)
+import Data.Functor.Identity
+#endif
+#if MIN_VERSION_base(4,9,0)
+import Data.Functor.Compose
+#endif
+
+import Data.Word ( Word8, Word16, Word32, Word64 )
 import Data.Int  ( Int8, Int16, Int32, Int64 )
 import Data.Complex
+import Data.Monoid (Dual(..),Sum(..),Product(..),All(..),Any(..))
+#if MIN_VERSION_base(4,8,0)
+import Data.Monoid (Alt(..))
+#endif
+#if MIN_VERSION_base(4,9,0)
+import Data.Semigroup (Min(..),Max(..),First(..),Last(..),WrappedMonoid(..),Arg(..))
+#endif
+#if !MIN_VERSION_base(4,8,0)
+import Data.Word ( Word )
+#endif
 
 #if __GLASGOW_HASKELL__ >= 707
 import Data.Typeable ( Typeable )
 #else
 import Data.Typeable ( Typeable1(..), Typeable2(..), mkTyConApp,
-#if MIN_VERSION_base(4,4,0)
                        mkTyCon3
-#else
-                       mkTyCon
-#endif
                      )
 #endif
-
 import Data.Data     ( Data(..) )
+import GHC.Exts      ( Down(..) )
 
 -- Data.Vector.Internal.Check is unused
 #define NOT_VECTOR_MODULE
@@ -62,8 +80,8 @@ type instance G.Mutable Vector = MVector
 
 class (G.Vector Vector a, M.MVector MVector a) => Unbox a
 
-instance NFData (Vector a)
-instance NFData (MVector s a)
+instance NFData (Vector a) where rnf !_ = ()
+instance NFData (MVector s a) where rnf !_ = ()
 
 -- -----------------
 -- Data and Typeable
@@ -72,11 +90,7 @@ instance NFData (MVector s a)
 deriving instance Typeable Vector
 deriving instance Typeable MVector
 #else
-#if MIN_VERSION_base(4,4,0)
 vectorTyCon = mkTyCon3 "vector"
-#else
-vectorTyCon m s = mkTyCon $ m ++ "." ++ s
-#endif
 
 instance Typeable1 Vector where
   typeOf1 _ = mkTyConApp (vectorTyCon "Data.Vector.Unboxed" "Vector") []
@@ -106,6 +120,7 @@ instance M.MVector MVector () where
   {-# INLINE basicUnsafeSlice #-}
   {-# INLINE basicOverlaps #-}
   {-# INLINE basicUnsafeNew #-}
+  {-# INLINE basicInitialize #-}
   {-# INLINE basicUnsafeRead #-}
   {-# INLINE basicUnsafeWrite #-}
   {-# INLINE basicClear #-}
@@ -120,6 +135,9 @@ instance M.MVector MVector () where
   basicOverlaps _ _ = False
 
   basicUnsafeNew n = return (MV_Unit n)
+
+  -- Nothing to initialize
+  basicInitialize _ = return ()
 
   basicUnsafeRead (MV_Unit _) _ = return ()
 
@@ -166,6 +184,7 @@ instance M.MVector MVector ty where {                                   \
 ; {-# INLINE basicUnsafeSlice #-}                                       \
 ; {-# INLINE basicOverlaps #-}                                          \
 ; {-# INLINE basicUnsafeNew #-}                                         \
+; {-# INLINE basicInitialize #-}                                        \
 ; {-# INLINE basicUnsafeReplicate #-}                                   \
 ; {-# INLINE basicUnsafeRead #-}                                        \
 ; {-# INLINE basicUnsafeWrite #-}                                       \
@@ -177,6 +196,7 @@ instance M.MVector MVector ty where {                                   \
 ; basicUnsafeSlice i n (con v) = con $ M.basicUnsafeSlice i n v         \
 ; basicOverlaps (con v1) (con v2) = M.basicOverlaps v1 v2               \
 ; basicUnsafeNew n = con `liftM` M.basicUnsafeNew n                     \
+; basicInitialize (con v) = M.basicInitialize v                         \
 ; basicUnsafeReplicate n x = con `liftM` M.basicUnsafeReplicate n x     \
 ; basicUnsafeRead (con v) i = M.basicUnsafeRead v i                     \
 ; basicUnsafeWrite (con v) i x = M.basicUnsafeWrite v i x               \
@@ -307,6 +327,7 @@ instance M.MVector MVector Bool where
   {-# INLINE basicUnsafeSlice #-}
   {-# INLINE basicOverlaps #-}
   {-# INLINE basicUnsafeNew #-}
+  {-# INLINE basicInitialize #-}
   {-# INLINE basicUnsafeReplicate #-}
   {-# INLINE basicUnsafeRead #-}
   {-# INLINE basicUnsafeWrite #-}
@@ -318,6 +339,7 @@ instance M.MVector MVector Bool where
   basicUnsafeSlice i n (MV_Bool v) = MV_Bool $ M.basicUnsafeSlice i n v
   basicOverlaps (MV_Bool v1) (MV_Bool v2) = M.basicOverlaps v1 v2
   basicUnsafeNew n = MV_Bool `liftM` M.basicUnsafeNew n
+  basicInitialize (MV_Bool v) = M.basicInitialize v
   basicUnsafeReplicate n x = MV_Bool `liftM` M.basicUnsafeReplicate n (fromBool x)
   basicUnsafeRead (MV_Bool v) i = toBool `liftM` M.basicUnsafeRead v i
   basicUnsafeWrite (MV_Bool v) i x = M.basicUnsafeWrite v i (fromBool x)
@@ -349,13 +371,14 @@ instance G.Vector Vector Bool where
 newtype instance MVector s (Complex a) = MV_Complex (MVector s (a,a))
 newtype instance Vector    (Complex a) = V_Complex  (Vector    (a,a))
 
-instance (RealFloat a, Unbox a) => Unbox (Complex a)
+instance (Unbox a) => Unbox (Complex a)
 
-instance (RealFloat a, Unbox a) => M.MVector MVector (Complex a) where
+instance (Unbox a) => M.MVector MVector (Complex a) where
   {-# INLINE basicLength #-}
   {-# INLINE basicUnsafeSlice #-}
   {-# INLINE basicOverlaps #-}
   {-# INLINE basicUnsafeNew #-}
+  {-# INLINE basicInitialize #-}
   {-# INLINE basicUnsafeReplicate #-}
   {-# INLINE basicUnsafeRead #-}
   {-# INLINE basicUnsafeWrite #-}
@@ -367,6 +390,7 @@ instance (RealFloat a, Unbox a) => M.MVector MVector (Complex a) where
   basicUnsafeSlice i n (MV_Complex v) = MV_Complex $ M.basicUnsafeSlice i n v
   basicOverlaps (MV_Complex v1) (MV_Complex v2) = M.basicOverlaps v1 v2
   basicUnsafeNew n = MV_Complex `liftM` M.basicUnsafeNew n
+  basicInitialize (MV_Complex v) = M.basicInitialize v
   basicUnsafeReplicate n (x :+ y) = MV_Complex `liftM` M.basicUnsafeReplicate n (x,y)
   basicUnsafeRead (MV_Complex v) i = uncurry (:+) `liftM` M.basicUnsafeRead v i
   basicUnsafeWrite (MV_Complex v) i (x :+ y) = M.basicUnsafeWrite v i (x,y)
@@ -376,7 +400,7 @@ instance (RealFloat a, Unbox a) => M.MVector MVector (Complex a) where
   basicUnsafeMove (MV_Complex v1) (MV_Complex v2) = M.basicUnsafeMove v1 v2
   basicUnsafeGrow (MV_Complex v) n = MV_Complex `liftM` M.basicUnsafeGrow v n
 
-instance (RealFloat a, Unbox a) => G.Vector Vector (Complex a) where
+instance (Unbox a) => G.Vector Vector (Complex a) where
   {-# INLINE basicUnsafeFreeze #-}
   {-# INLINE basicUnsafeThaw #-}
   {-# INLINE basicLength #-}
@@ -394,10 +418,163 @@ instance (RealFloat a, Unbox a) => G.Vector Vector (Complex a) where
   elemseq _ (x :+ y) z = G.elemseq (undefined :: Vector a) x
                        $ G.elemseq (undefined :: Vector a) y z
 
+-- -------
+-- Identity
+-- -------
+#define newtypeMVector(inst_ctxt,inst_head,tyC,con) \
+instance inst_ctxt => M.MVector MVector (inst_head) where { \
+; {-# INLINE basicLength          #-}                                         \
+; {-# INLINE basicUnsafeSlice     #-}                                         \
+; {-# INLINE basicOverlaps        #-}                                         \
+; {-# INLINE basicUnsafeNew       #-}                                         \
+; {-# INLINE basicInitialize      #-}                                         \
+; {-# INLINE basicUnsafeReplicate #-}                                         \
+; {-# INLINE basicUnsafeRead      #-}                                         \
+; {-# INLINE basicUnsafeWrite     #-}                                         \
+; {-# INLINE basicClear           #-}                                         \
+; {-# INLINE basicSet             #-}                                         \
+; {-# INLINE basicUnsafeCopy      #-}                                         \
+; {-# INLINE basicUnsafeGrow      #-}                                         \
+; basicLength (con v)                = M.basicLength v                        \
+; basicUnsafeSlice i n (con v)       = con $ M.basicUnsafeSlice i n v         \
+; basicOverlaps (con v1) (con v2)    = M.basicOverlaps v1 v2                  \
+; basicUnsafeNew n                   = con `liftM` M.basicUnsafeNew n         \
+; basicInitialize (con v)            = M.basicInitialize v                    \
+; basicUnsafeReplicate n (tyC x)     = con `liftM` M.basicUnsafeReplicate n x \
+; basicUnsafeRead (con v) i          = tyC `liftM` M.basicUnsafeRead v i      \
+; basicUnsafeWrite (con v) i (tyC x) = M.basicUnsafeWrite v i x               \
+; basicClear (con v)                 = M.basicClear v                         \
+; basicSet (con v) (tyC x)           = M.basicSet v x                         \
+; basicUnsafeCopy (con v1) (con v2)  = M.basicUnsafeCopy v1 v2                \
+; basicUnsafeMove (con v1) (con v2)  = M.basicUnsafeMove v1 v2                \
+; basicUnsafeGrow (con v) n          = con `liftM` M.basicUnsafeGrow v n      \
+}
+#define newtypeVector(inst_ctxt,inst_head,tyC,con,mcon) \
+instance inst_ctxt => G.Vector Vector (inst_head) where { \
+; {-# INLINE basicUnsafeFreeze  #-}                                       \
+; {-# INLINE basicUnsafeThaw    #-}                                       \
+; {-# INLINE basicLength        #-}                                       \
+; {-# INLINE basicUnsafeSlice   #-}                                       \
+; {-# INLINE basicUnsafeIndexM  #-}                                       \
+; {-# INLINE elemseq            #-}                                       \
+; basicUnsafeFreeze (mcon v)        = con `liftM` G.basicUnsafeFreeze v   \
+; basicUnsafeThaw (con v)           = mcon `liftM` G.basicUnsafeThaw v    \
+; basicLength (con v)               = G.basicLength v                     \
+; basicUnsafeSlice i n (con v)      = con $ G.basicUnsafeSlice i n v      \
+; basicUnsafeIndexM (con v) i       = tyC `liftM` G.basicUnsafeIndexM v i \
+; basicUnsafeCopy (mcon mv) (con v) = G.basicUnsafeCopy mv v              \
+; elemseq _ (tyC a)                 = G.elemseq (undefined :: Vector a) a \
+}
+#define deriveNewtypeInstances(inst_ctxt,inst_head,rep,tyC,con,mcon) \
+newtype instance MVector s (inst_head) = mcon (MVector s (rep)) ;\
+newtype instance Vector    (inst_head) = con  (Vector (rep))    ;\
+instance inst_ctxt => Unbox (inst_head)                         ;\
+newtypeMVector(inst_ctxt, inst_head, tyC, mcon)                 ;\
+newtypeVector(inst_ctxt,  inst_head, tyC, con, mcon)
+
+#if MIN_VERSION_base(4,8,0)
+deriveNewtypeInstances(Unbox a, Identity a, a, Identity, V_Identity, MV_Identity)
+#endif
+
+deriveNewtypeInstances(Unbox a, Down a,    a, Down,    V_Down,    MV_Down)
+deriveNewtypeInstances(Unbox a, Dual a,    a, Dual,    V_Dual,    MV_Dual)
+deriveNewtypeInstances(Unbox a, Sum a,     a, Sum,     V_Sum,     MV_Sum)
+deriveNewtypeInstances(Unbox a, Product a, a, Product, V_Product, MV_Product)
+
+
+-- --------------
+-- Data.Semigroup
+-- --------------
+
+#if MIN_VERSION_base(4,9,0)
+deriveNewtypeInstances(Unbox a, Min a,   a, Min,   V_Min,   MV_Min)
+deriveNewtypeInstances(Unbox a, Max a,   a, Max,   V_Max,   MV_Max)
+deriveNewtypeInstances(Unbox a, First a, a, First, V_First, MV_First)
+deriveNewtypeInstances(Unbox a, Last a,  a, Last,  V_Last,  MV_Last)
+deriveNewtypeInstances(Unbox a, WrappedMonoid a, a, WrapMonoid, V_WrappedMonoid, MV_WrappedMonoid)
+
+-- ------------------
+-- Data.Semigroup.Arg
+-- ------------------
+
+newtype instance MVector s (Arg a b) = MV_Arg (MVector s (a,b))
+newtype instance Vector    (Arg a b) = V_Arg  (Vector    (a,b))
+
+instance (Unbox a, Unbox b) => Unbox (Arg a b)
+
+instance (Unbox a, Unbox b) => M.MVector MVector (Arg a b) where
+  {-# INLINE basicLength #-}
+  {-# INLINE basicUnsafeSlice #-}
+  {-# INLINE basicOverlaps #-}
+  {-# INLINE basicUnsafeNew #-}
+  {-# INLINE basicInitialize #-}
+  {-# INLINE basicUnsafeReplicate #-}
+  {-# INLINE basicUnsafeRead #-}
+  {-# INLINE basicUnsafeWrite #-}
+  {-# INLINE basicClear #-}
+  {-# INLINE basicSet #-}
+  {-# INLINE basicUnsafeCopy #-}
+  {-# INLINE basicUnsafeGrow #-}
+  basicLength (MV_Arg v)                  = M.basicLength v
+  basicUnsafeSlice i n (MV_Arg v)         = MV_Arg $ M.basicUnsafeSlice i n v
+  basicOverlaps (MV_Arg v1) (MV_Arg v2)   = M.basicOverlaps v1 v2
+  basicUnsafeNew n                        = MV_Arg `liftM` M.basicUnsafeNew n
+  basicInitialize (MV_Arg v)              = M.basicInitialize v
+  basicUnsafeReplicate n (Arg x y)        = MV_Arg `liftM` M.basicUnsafeReplicate n (x,y)
+  basicUnsafeRead (MV_Arg v) i            = uncurry Arg `liftM` M.basicUnsafeRead v i
+  basicUnsafeWrite (MV_Arg v) i (Arg x y) = M.basicUnsafeWrite v i (x,y)
+  basicClear (MV_Arg v)                   = M.basicClear v
+  basicSet (MV_Arg v) (Arg x y)           = M.basicSet v (x,y)
+  basicUnsafeCopy (MV_Arg v1) (MV_Arg v2) = M.basicUnsafeCopy v1 v2
+  basicUnsafeMove (MV_Arg v1) (MV_Arg v2) = M.basicUnsafeMove v1 v2
+  basicUnsafeGrow (MV_Arg v) n            = MV_Arg `liftM` M.basicUnsafeGrow v n
+
+instance (Unbox a, Unbox b) => G.Vector Vector (Arg a b) where
+  {-# INLINE basicUnsafeFreeze #-}
+  {-# INLINE basicUnsafeThaw #-}
+  {-# INLINE basicLength #-}
+  {-# INLINE basicUnsafeSlice #-}
+  {-# INLINE basicUnsafeIndexM #-}
+  {-# INLINE elemseq #-}
+  basicUnsafeFreeze (MV_Arg v)   = V_Arg `liftM` G.basicUnsafeFreeze v
+  basicUnsafeThaw (V_Arg v)      = MV_Arg `liftM` G.basicUnsafeThaw v
+  basicLength (V_Arg v)          = G.basicLength v
+  basicUnsafeSlice i n (V_Arg v) = V_Arg $ G.basicUnsafeSlice i n v
+  basicUnsafeIndexM (V_Arg v) i  = uncurry Arg `liftM` G.basicUnsafeIndexM v i
+  basicUnsafeCopy (MV_Arg mv) (V_Arg v)
+                                 = G.basicUnsafeCopy mv v
+  elemseq _ (Arg x y) z          = G.elemseq (undefined :: Vector a) x
+                                 $ G.elemseq (undefined :: Vector b) y z
+#endif
+
+deriveNewtypeInstances((), Any, Bool, Any, V_Any, MV_Any)
+deriveNewtypeInstances((), All, Bool, All, V_All, MV_All)
+
+-- -------
+-- Const
+-- -------
+
+deriveNewtypeInstances(Unbox a, Const a b, a, Const, V_Const, MV_Const)
+
+-- ---
+-- Alt
+-- ---
+
+#if MIN_VERSION_base(4,8,0)
+deriveNewtypeInstances(Unbox (f a), Alt f a, f a, Alt, V_Alt, MV_Alt)
+#endif
+
+-- -------
+-- Compose
+-- -------
+
+#if MIN_VERSION_base(4,9,0)
+deriveNewtypeInstances(Unbox (f (g a)), Compose f g a, f (g a), Compose, V_Compose, MV_Compose)
+#endif
+
 -- ------
 -- Tuples
 -- ------
 
 #define DEFINE_INSTANCES
 #include "unbox-tuple-instances"
-

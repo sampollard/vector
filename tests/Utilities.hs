@@ -16,6 +16,7 @@ import Data.Function (on)
 import Data.Functor.Identity
 import Data.List ( sortBy )
 import Data.Monoid
+import Data.Maybe (catMaybes)
 
 instance Show a => Show (S.Bundle v a) where
     show s = "Data.Vector.Fusion.Bundle.fromList " ++ show (S.toList s)
@@ -51,14 +52,10 @@ instance Arbitrary a => Arbitrary (S.Bundle v a) where
 instance CoArbitrary a => CoArbitrary (S.Bundle v a) where
     coarbitrary = coarbitrary . S.toList
 
-instance Arbitrary a => Arbitrary (Identity a) where
-    arbitrary = fmap Identity arbitrary
-
-instance CoArbitrary a => CoArbitrary (Identity a) where
-    coarbitrary = coarbitrary . runIdentity
-
-instance Arbitrary a => Arbitrary (Writer a ()) where
-    arbitrary = fmap (writer . ((,) ())) arbitrary
+instance (Arbitrary a, Arbitrary b) => Arbitrary (Writer a b) where
+    arbitrary = do b <- arbitrary
+                   a <- arbitrary
+                   return $ writer (b,a)
 
 instance CoArbitrary a => CoArbitrary (Writer a ()) where
     coarbitrary = coarbitrary . runWriter
@@ -127,6 +124,10 @@ id_TestData(Float)
 id_TestData(Double)
 id_TestData(Ordering)
 
+bimapEither :: (a -> b) -> (c -> d) -> Either a c -> Either b d
+bimapEither f _ (Left a) = Left (f a)
+bimapEither _ g (Right c) = Right (g c)
+
 -- Functorish models
 -- All of these need UndecidableInstances although they are actually well founded. Oh well.
 instance (Eq a, TestData a) => TestData (Maybe a) where
@@ -135,6 +136,14 @@ instance (Eq a, TestData a) => TestData (Maybe a) where
   unmodel = fmap unmodel
 
   type EqTest (Maybe a) = Property
+  equal x y = property (x == y)
+
+instance (Eq a, TestData a, Eq b, TestData b) => TestData (Either a b) where
+  type Model (Either a b) = Either (Model a) (Model b)
+  model = bimapEither model model
+  unmodel = bimapEither unmodel unmodel
+
+  type EqTest (Either a b) = Property
   equal x y = property (x == y)
 
 instance (Eq a, TestData a) => TestData [a] where
@@ -153,13 +162,13 @@ instance (Eq a, TestData a) => TestData (Identity a) where
   type EqTest (Identity a) = Property
   equal = (property .) . on (==) runIdentity
 
-instance (Eq a, TestData a, Monoid a) => TestData (Writer a ()) where
-  type Model (Writer a ()) = Writer (Model a) ()
+instance (Eq a, TestData a, Eq b, TestData b, Monoid a) => TestData (Writer a b) where
+  type Model (Writer a b) = Writer (Model a) (Model b)
   model = mapWriter model
   unmodel = mapWriter unmodel
 
-  type EqTest (Writer a ()) = Property
-  equal = (property .) . on (==) execWriter
+  type EqTest (Writer a b) = Property
+  equal = (property .) . on (==) runWriter
 
 instance (Eq a, Eq b, TestData a, TestData b) => TestData (a,b) where
   type Model (a,b) = (Model a, Model b)
@@ -218,7 +227,7 @@ notNullS2 _ s = not $ S.null s
 
 -- Generators
 index_value_pairs :: Arbitrary a => Int -> Gen [(Int,a)]
-index_value_pairs 0 = return [] 
+index_value_pairs 0 = return []
 index_value_pairs m = sized $ \n ->
   do
     len <- choose (0,n)
@@ -253,7 +262,7 @@ accum f xs ps = go xs ps' 0
     go (x:xs) ((i,y) : ps) j
       | i == j     = go (f x y : xs) ps j
     go (x:xs) ps j = x : go xs ps (j+1)
-    go [] _ _      = []  
+    go [] _ _      = []
 
 (//) :: [a] -> [(Int, a)] -> [a]
 xs // ps = go xs ps' 0
@@ -292,10 +301,22 @@ izipWith3 = withIndexFirst zipWith3
 ifilter :: (Int -> a -> Bool) -> [a] -> [a]
 ifilter f = map snd . withIndexFirst filter f
 
+mapMaybe :: (a -> Maybe b) -> [a] -> [b]
+mapMaybe f = catMaybes . map f
+
+imapMaybe :: (Int -> a -> Maybe b) -> [a] -> [b]
+imapMaybe f = catMaybes . withIndexFirst map f
+
 indexedLeftFold fld f z = fld (uncurry . f) z . zip [0..]
 
 ifoldl :: (a -> Int -> a -> a) -> a -> [a] -> a
 ifoldl = indexedLeftFold foldl
+
+iscanl :: (Int -> a -> b -> a) -> a -> [b] -> [a]
+iscanl f z = scanl (\a (i, b) -> f i a b) z . zip [0..]
+
+iscanr :: (Int -> a -> b -> b) -> b -> [a] -> [b]
+iscanr f z = scanr (uncurry f) z . zip [0..]
 
 ifoldr :: (Int -> a -> b -> b) -> b -> [a] -> b
 ifoldr f z = foldr (uncurry f) z . zip [0..]
@@ -315,6 +336,27 @@ minIndex = fst . foldr1 imin . zip [0..]
 maxIndex :: Ord a => [a] -> Int
 maxIndex = fst . foldr1 imax . zip [0..]
   where
-    imax (i,x) (j,y) | x >= y    = (i,x)
+    imax (i,x) (j,y) | x >  y    = (i,x)
                      | otherwise = (j,y)
 
+iterateNM :: Monad m => Int -> (a -> m a) -> a -> m [a]
+iterateNM n f x
+    | n <= 0    = return []
+    | n == 1    = return [x]
+    | otherwise =  do x' <- f x
+                      xs <- iterateNM (n-1) f x'
+                      return (x : xs)
+
+unfoldrM :: Monad m => (b -> m (Maybe (a,b))) -> b -> m [a]
+unfoldrM step b0 = do
+    r <- step b0
+    case r of
+      Nothing    -> return []
+      Just (a,b) -> do as <- unfoldrM step b
+                       return (a : as)
+
+
+limitUnfolds f (theirs, ours)
+    | ours >= 0
+    , Just (out, theirs') <- f theirs = Just (out, (theirs', ours - 1))
+    | otherwise                       = Nothing

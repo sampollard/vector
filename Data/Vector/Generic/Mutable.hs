@@ -44,6 +44,7 @@ module Data.Vector.Generic.Mutable (
   unsafeRead, unsafeWrite, unsafeModify, unsafeSwap, unsafeExchange,
 
   -- * Modifying vectors
+  nextPermutation,
 
   -- ** Filling and copying
   set, copy, move, unsafeCopy, unsafeMove,
@@ -55,7 +56,8 @@ module Data.Vector.Generic.Mutable (
   transform, transformR,
   fill, fillR,
   unsafeAccum, accum, unsafeUpdate, update, reverse,
-  unstablePartition, unstablePartitionBundle, partitionBundle
+  unstablePartition, unstablePartitionBundle, partitionBundle,
+  partitionWithBundle
 ) where
 
 import           Data.Vector.Generic.Mutable.Base
@@ -582,9 +584,9 @@ overlaps = basicOverlaps
 new :: (PrimMonad m, MVector v a) => Int -> m (v (PrimState m) a)
 {-# INLINE new #-}
 new n = BOUNDS_CHECK(checkLength) "new" n
-      $ unsafeNew n
+      $ unsafeNew n >>= \v -> basicInitialize v >> return v
 
--- | Create a mutable vector of the given length. The length is not checked.
+-- | Create a mutable vector of the given length. The memory is not initialized.
 unsafeNew :: (PrimMonad m, MVector v a) => Int -> m (v (PrimState m) a)
 {-# INLINE unsafeNew #-}
 unsafeNew n = UNSAFE_CHECK(checkLength) "unsafeNew" n
@@ -619,13 +621,17 @@ grow :: (PrimMonad m, MVector v a)
                 => v (PrimState m) a -> Int -> m (v (PrimState m) a)
 {-# INLINE grow #-}
 grow v by = BOUNDS_CHECK(checkLength) "grow" by
-          $ unsafeGrow v by
+          $ do vnew <- unsafeGrow v by
+               basicInitialize $ basicUnsafeSlice (length v) by vnew
+               return vnew
 
 growFront :: (PrimMonad m, MVector v a)
                 => v (PrimState m) a -> Int -> m (v (PrimState m) a)
 {-# INLINE growFront #-}
 growFront v by = BOUNDS_CHECK(checkLength) "growFront" by
-               $ unsafeGrowFront v by
+               $ do vnew <- unsafeGrowFront v by
+                    basicInitialize $ basicUnsafeSlice 0 by vnew
+                    return vnew
 
 enlarge_delta :: MVector v a => v s a -> Int
 enlarge_delta v = max (length v) 1
@@ -634,13 +640,18 @@ enlarge_delta v = max (length v) 1
 enlarge :: (PrimMonad m, MVector v a)
                 => v (PrimState m) a -> m (v (PrimState m) a)
 {-# INLINE enlarge #-}
-enlarge v = unsafeGrow v (enlarge_delta v)
+enlarge v = do vnew <- unsafeGrow v by
+               basicInitialize $ basicUnsafeSlice (length v) by vnew
+               return vnew
+  where
+    by = enlarge_delta v
 
 enlargeFront :: (PrimMonad m, MVector v a)
                 => v (PrimState m) a -> m (v (PrimState m) a, Int)
 {-# INLINE enlargeFront #-}
 enlargeFront v = do
                    v' <- unsafeGrowFront v by
+                   basicInitialize $ basicUnsafeSlice 0 by v'
                    return (v', by)
   where
     by = enlarge_delta v
@@ -759,8 +770,9 @@ set = basicSet
 
 -- | Copy a vector. The two vectors must have the same length and may not
 -- overlap.
-copy :: (PrimMonad m, MVector v a)
-                => v (PrimState m) a -> v (PrimState m) a -> m ()
+copy :: (PrimMonad m, MVector v a) => v (PrimState m) a   -- ^ target
+                                   -> v (PrimState m) a   -- ^ source
+                                   -> m ()
 {-# INLINE copy #-}
 copy dst src = BOUNDS_CHECK(check) "copy" "overlapping vectors"
                                           (not (dst `overlaps` src))
@@ -776,7 +788,9 @@ copy dst src = BOUNDS_CHECK(check) "copy" "overlapping vectors"
 -- copied to a temporary vector and then the temporary vector was copied
 -- to the target vector.
 move :: (PrimMonad m, MVector v a)
-                => v (PrimState m) a -> v (PrimState m) a -> m ()
+     => v (PrimState m) a   -- ^ target
+     -> v (PrimState m) a   -- ^ source
+     -> m ()
 {-# INLINE move #-}
 move dst src = BOUNDS_CHECK(check) "move" "length mismatch"
                                           (length dst == length src)
@@ -986,3 +1000,92 @@ partitionUnknown f s
                       v2' <- unsafeAppend1 v2 i2 x
                       return (v1, i1, v2', i2+1)
 
+
+partitionWithBundle :: (PrimMonad m, MVector v a, MVector v b, MVector v c)
+        => (a -> Either b c) -> Bundle u a -> m (v (PrimState m) b, v (PrimState m) c)
+{-# INLINE partitionWithBundle #-}
+partitionWithBundle f s
+  = case upperBound (Bundle.size s) of
+      Just n  -> partitionWithMax f s n
+      Nothing -> partitionWithUnknown f s
+
+partitionWithMax :: (PrimMonad m, MVector v a, MVector v b, MVector v c)
+  => (a -> Either b c) -> Bundle u a -> Int -> m (v (PrimState m) b, v (PrimState m) c)
+{-# INLINE partitionWithMax #-}
+partitionWithMax f s n
+  = do
+      v1 <- unsafeNew n
+      v2 <- unsafeNew n
+      let {-# INLINE_INNER put #-}
+          put (i1, i2) x = case f x of
+            Left b -> do
+              unsafeWrite v1 i1 b
+              return (i1+1, i2)
+            Right c -> do
+              unsafeWrite v2 i2 c
+              return (i1, i2+1)
+      (n1, n2) <- Bundle.foldM' put (0, 0) s
+      INTERNAL_CHECK(checkSlice) "partitionEithersMax" 0 n1 (length v1)
+        $ INTERNAL_CHECK(checkSlice) "partitionEithersMax" 0 n2 (length v2)
+        $ return (unsafeSlice 0 n1 v1, unsafeSlice 0 n2 v2)
+
+partitionWithUnknown :: forall m v u a b c.
+     (PrimMonad m, MVector v a, MVector v b, MVector v c)
+  => (a -> Either b c) -> Bundle u a -> m (v (PrimState m) b, v (PrimState m) c)
+{-# INLINE partitionWithUnknown #-}
+partitionWithUnknown f s
+  = do
+      v1 <- unsafeNew 0
+      v2 <- unsafeNew 0
+      (v1', n1, v2', n2) <- Bundle.foldM' put (v1, 0, v2, 0) s
+      INTERNAL_CHECK(checkSlice) "partitionEithersUnknown" 0 n1 (length v1')
+        $ INTERNAL_CHECK(checkSlice) "partitionEithersUnknown" 0 n2 (length v2')
+        $ return (unsafeSlice 0 n1 v1', unsafeSlice 0 n2 v2')
+  where
+    put :: (v (PrimState m) b, Int, v (PrimState m) c, Int)
+        -> a
+        -> m (v (PrimState m) b, Int, v (PrimState m) c, Int)
+    {-# INLINE_INNER put #-}
+    put (v1, i1, v2, i2) x = case f x of
+      Left b -> do
+        v1' <- unsafeAppend1 v1 i1 b
+        return (v1', i1+1, v2, i2)
+      Right c -> do
+        v2' <- unsafeAppend1 v2 i2 c
+        return (v1, i1, v2', i2+1)
+
+{-
+http://en.wikipedia.org/wiki/Permutation#Algorithms_to_generate_permutations
+
+The following algorithm generates the next permutation lexicographically after
+a given permutation. It changes the given permutation in-place.
+
+1. Find the largest index k such that a[k] < a[k + 1]. If no such index exists,
+   the permutation is the last permutation.
+2. Find the largest index l greater than k such that a[k] < a[l].
+3. Swap the value of a[k] with that of a[l].
+4. Reverse the sequence from a[k + 1] up to and including the final element a[n]
+-}
+
+-- | Compute the next (lexicographically) permutation of given vector in-place.
+--   Returns False when input is the last permutation
+nextPermutation :: (PrimMonad m,Ord e,MVector v e) => v (PrimState m) e -> m Bool
+nextPermutation v
+    | dim < 2 = return False
+    | otherwise = do
+        val <- unsafeRead v 0
+        (k,l) <- loop val (-1) 0 val 1
+        if k < 0
+         then return False
+         else unsafeSwap v k l >>
+              reverse (unsafeSlice (k+1) (dim-k-1) v) >>
+              return True
+    where loop !kval !k !l !prev !i
+              | i == dim = return (k,l)
+              | otherwise  = do
+                  cur <- unsafeRead v i
+                  -- TODO: make tuple unboxed
+                  let (kval',k') = if prev < cur then (prev,i-1) else (kval,k)
+                      l' = if kval' < cur then i else l
+                  loop kval' k' l' cur (i+1)
+          dim = length v

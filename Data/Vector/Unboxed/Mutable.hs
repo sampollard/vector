@@ -48,6 +48,7 @@ module Data.Vector.Unboxed.Mutable (
   unsafeRead, unsafeWrite, unsafeModify, unsafeSwap,
 
   -- * Modifying vectors
+  nextPermutation,
 
   -- ** Filling and copying
   set, copy, move, unsafeCopy, unsafeMove
@@ -149,7 +150,7 @@ new :: (PrimMonad m, Unbox a) => Int -> m (MVector (PrimState m) a)
 {-# INLINE new #-}
 new = G.new
 
--- | Create a mutable vector of the given length. The length is not checked.
+-- | Create a mutable vector of the given length. The memory is not initialized.
 unsafeNew :: (PrimMonad m, Unbox a) => Int -> m (MVector (PrimState m) a)
 {-# INLINE unsafeNew #-}
 unsafeNew = G.unsafeNew
@@ -255,7 +256,9 @@ set = G.set
 -- | Copy a vector. The two vectors must have the same length and may not
 -- overlap.
 copy :: (PrimMonad m, Unbox a)
-                 => MVector (PrimState m) a -> MVector (PrimState m) a -> m ()
+     => MVector (PrimState m) a   -- ^ target
+     -> MVector (PrimState m) a   -- ^ source
+     -> m ()
 {-# INLINE copy #-}
 copy = G.copy
 
@@ -276,7 +279,9 @@ unsafeCopy = G.unsafeCopy
 -- copied to a temporary vector and then the temporary vector was copied
 -- to the target vector.
 move :: (PrimMonad m, Unbox a)
-                 => MVector (PrimState m) a -> MVector (PrimState m) a -> m ()
+     => MVector (PrimState m) a   -- ^ target
+     -> MVector (PrimState m) a   -- ^ source
+     -> m ()
 {-# INLINE move #-}
 move = G.move
 
@@ -294,6 +299,11 @@ unsafeMove :: (PrimMonad m, Unbox a)
 {-# INLINE unsafeMove #-}
 unsafeMove = G.unsafeMove
 
+-- | Compute the next (lexicographically) permutation of given vector in-place.
+--   Returns False when input is the last permutation
+nextPermutation :: (PrimMonad m,Ord e,Unbox e) => MVector (PrimState m) e -> m Bool
+{-# INLINE nextPermutation #-}
+nextPermutation = G.nextPermutation
+
 #define DEFINE_MUTABLE
 #include "unbox-tuple-instances"
-

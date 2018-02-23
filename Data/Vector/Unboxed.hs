@@ -62,10 +62,11 @@ module Data.Vector.Unboxed (
   empty, singleton, replicate, generate, iterateN,
 
   -- ** Monadic initialisation
-  replicateM, generateM, create,
+  replicateM, generateM, iterateNM, create, createT,
 
   -- ** Unfolding
   unfoldr, unfoldrN,
+  unfoldrM, unfoldrNM,
   constructN, constructrN,
 
   -- ** Enumeration
@@ -118,11 +119,13 @@ module Data.Vector.Unboxed (
   -- * Working with predicates
 
   -- ** Filtering
-  filter, ifilter, filterM,
+  filter, ifilter, uniq,
+  mapMaybe, imapMaybe,
+  filterM,
   takeWhile, dropWhile,
 
   -- ** Partitioning
-  partition, unstablePartition, span, break,
+  partition, unstablePartition, partitionWith, span, break,
 
   -- ** Searching
   elem, notElem, find, findIndex, findIndices, elemIndex, elemIndices,
@@ -184,9 +187,13 @@ import Prelude hiding ( length, null,
                         enumFromTo, enumFromThenTo,
                         mapM, mapM_ )
 
-import Text.Read     ( Read(..), readListPrecDefault )
+import Text.Read      ( Read(..), readListPrecDefault )
+import Data.Semigroup ( Semigroup(..) )
 
+#if !MIN_VERSION_base(4,8,0)
 import Data.Monoid   ( Monoid(..) )
+import Data.Traversable ( Traversable )
+#endif
 
 #if __GLASGOW_HASKELL__ >= 708
 import qualified GHC.Exts as Exts (IsList(..))
@@ -220,6 +227,13 @@ instance (Unbox a, Ord a) => Ord (Vector a) where
   {-# INLINE (>=) #-}
   xs >= ys = Bundle.cmp (G.stream xs) (G.stream ys) /= LT
 
+instance Unbox a => Semigroup (Vector a) where
+  {-# INLINE (<>) #-}
+  (<>) = (++)
+
+  {-# INLINE sconcat #-}
+  sconcat = G.concatNE
+
 instance Unbox a => Monoid (Vector a) where
   {-# INLINE mempty #-}
   mempty = empty
@@ -250,12 +264,12 @@ instance (Unbox e) => Exts.IsList (Vector e) where
 -- Length information
 -- ------------------
 
--- | /O(1)/ Yield the length of the vector.
+-- | /O(1)/ Yield the length of the vector
 length :: Unbox a => Vector a -> Int
 {-# INLINE length #-}
 length = G.length
 
--- | /O(1)/ Test whether a vector if empty
+-- | /O(1)/ Test whether a vector is empty
 null :: Unbox a => Vector a -> Bool
 {-# INLINE null #-}
 null = G.null
@@ -473,8 +487,8 @@ unfoldr :: Unbox a => (b -> Maybe (a, b)) -> b -> Vector a
 {-# INLINE unfoldr #-}
 unfoldr = G.unfoldr
 
--- | /O(n)/ Construct a vector with at most @n@ by repeatedly applying the
--- generator function to the a seed. The generator function yields 'Just' the
+-- | /O(n)/ Construct a vector with at most @n@ elements by repeatedly applying
+-- the generator function to a seed. The generator function yields 'Just' the
 -- next element and the new seed or 'Nothing' if there are no more elements.
 --
 -- > unfoldrN 3 (\n -> Just (n,n-1)) 10 = <10,9,8>
@@ -482,10 +496,26 @@ unfoldrN :: Unbox a => Int -> (b -> Maybe (a, b)) -> b -> Vector a
 {-# INLINE unfoldrN #-}
 unfoldrN = G.unfoldrN
 
+-- | /O(n)/ Construct a vector by repeatedly applying the monadic
+-- generator function to a seed. The generator function yields 'Just'
+-- the next element and the new seed or 'Nothing' if there are no more
+-- elements.
+unfoldrM :: (Monad m, Unbox a) => (b -> m (Maybe (a, b))) -> b -> m (Vector a)
+{-# INLINE unfoldrM #-}
+unfoldrM = G.unfoldrM
+
+-- | /O(n)/ Construct a vector by repeatedly applying the monadic
+-- generator function to a seed. The generator function yields 'Just'
+-- the next element and the new seed or 'Nothing' if there are no more
+-- elements.
+unfoldrNM :: (Monad m, Unbox a) => Int -> (b -> m (Maybe (a, b))) -> b -> m (Vector a)
+{-# INLINE unfoldrNM #-}
+unfoldrNM = G.unfoldrNM
+
 -- | /O(n)/ Construct a vector with @n@ elements by repeatedly applying the
 -- generator function to the already constructed part of the vector.
 --
--- > constructN 3 f = let a = f <> ; b = f <a> ; c = f <a,b> in f <a,b,c>
+-- > constructN 3 f = let a = f <> ; b = f <a> ; c = f <a,b> in <a,b,c>
 --
 constructN :: Unbox a => Int -> (Vector a -> a) -> Vector a
 {-# INLINE constructN #-}
@@ -495,7 +525,7 @@ constructN = G.constructN
 -- repeatedly applying the generator function to the already constructed part
 -- of the vector.
 --
--- > constructrN 3 f = let a = f <> ; b = f<a> ; c = f <b,a> in f <c,b,a>
+-- > constructrN 3 f = let a = f <> ; b = f<a> ; c = f <b,a> in <c,b,a>
 --
 constructrN :: Unbox a => Int -> (Vector a -> a) -> Vector a
 {-# INLINE constructrN #-}
@@ -575,6 +605,11 @@ generateM :: (Monad m, Unbox a) => Int -> (Int -> m a) -> m (Vector a)
 {-# INLINE generateM #-}
 generateM = G.generateM
 
+-- | /O(n)/ Apply monadic function n times to value. Zeroth element is original value.
+iterateNM :: (Monad m, Unbox a) => Int -> (a -> m a) -> a -> m (Vector a)
+{-# INLINE iterateNM #-}
+iterateNM = G.iterateNM
+
 -- | Execute the monadic action and freeze the resulting vector.
 --
 -- @
@@ -584,6 +619,11 @@ create :: Unbox a => (forall s. ST s (MVector s a)) -> Vector a
 {-# INLINE create #-}
 -- NOTE: eta-expanded due to http://hackage.haskell.org/trac/ghc/ticket/4120
 create p = G.create p
+
+-- | Execute the monadic action and freeze the resulting vectors.
+createT :: (Traversable f, Unbox a) => (forall s. ST s (f (MVector s a))) -> f (Vector a)
+{-# INLINE createT #-}
+createT p = G.createT p
 
 -- Restricting memory usage
 -- ------------------------
@@ -820,7 +860,7 @@ imapM_ :: (Monad m, Unbox a) => (Int -> a -> m b) -> Vector a -> m ()
 imapM_ = G.imapM_
 
 -- | /O(n)/ Apply the monadic action to all elements of the vector, yielding a
--- vector of results. Equvalent to @flip 'mapM'@.
+-- vector of results. Equivalent to @flip 'mapM'@.
 forM :: (Monad m, Unbox a, Unbox b) => Vector a -> (a -> m b) -> m (Vector b)
 {-# INLINE forM #-}
 forM = G.forM
@@ -939,11 +979,26 @@ filter :: Unbox a => (a -> Bool) -> Vector a -> Vector a
 {-# INLINE filter #-}
 filter = G.filter
 
+-- | /O(n)/ Drop repeated adjacent elements.
+uniq :: (Unbox a, Eq a) => Vector a -> Vector a
+{-# INLINE uniq #-}
+uniq = G.uniq
+
 -- | /O(n)/ Drop elements that do not satisfy the predicate which is applied to
 -- values and their indices
 ifilter :: Unbox a => (Int -> a -> Bool) -> Vector a -> Vector a
 {-# INLINE ifilter #-}
 ifilter = G.ifilter
+
+-- | /O(n)/ Drop elements when predicate returns Nothing
+mapMaybe :: (Unbox a, Unbox b) => (a -> Maybe b) -> Vector a -> Vector b
+{-# INLINE mapMaybe #-}
+mapMaybe = G.mapMaybe
+
+-- | /O(n)/ Drop elements when predicate, applied to index and value, returns Nothing
+imapMaybe :: (Unbox a, Unbox b) => (Int -> a -> Maybe b) -> Vector a -> Vector b
+{-# INLINE imapMaybe #-}
+imapMaybe = G.imapMaybe
 
 -- | /O(n)/ Drop elements that do not satisfy the monadic predicate
 filterM :: (Monad m, Unbox a) => (a -> m Bool) -> Vector a -> m (Vector a)
@@ -980,6 +1035,13 @@ partition = G.partition
 unstablePartition :: Unbox a => (a -> Bool) -> Vector a -> (Vector a, Vector a)
 {-# INLINE unstablePartition #-}
 unstablePartition = G.unstablePartition
+
+-- | /O(n)/ Split the vector in two parts, the first one containing the
+--   @Right@ elements and the second containing the @Left@ elements.
+--   The relative order of the elements is preserved.
+partitionWith :: (Unbox a, Unbox b, Unbox c) => (a -> Either b c) -> Vector a -> (Vector b, Vector c)
+{-# INLINE partitionWith #-}
+partitionWith = G.partitionWith
 
 -- | /O(n)/ Split the vector into the longest prefix of elements that satisfy
 -- the predicate and the rest without copying.
@@ -1431,4 +1493,3 @@ copy = G.copy
 
 #define DEFINE_IMMUTABLE
 #include "unbox-tuple-instances"
-
