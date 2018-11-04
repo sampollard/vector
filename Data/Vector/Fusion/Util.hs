@@ -15,6 +15,7 @@ module Data.Vector.Fusion.Util (
 
   delay_inline, delayed_min
 ) where
+import Control.Monad
 
 -- | Identity monad
 newtype Id a = Id { unId :: a }
@@ -22,8 +23,12 @@ newtype Id a = Id { unId :: a }
 instance Functor Id where
   fmap f (Id x) = Id (f x)
 
+instance Applicative Id where
+  pure       = Id
+  (<*>)      = ap
+
 instance Monad Id where
-  return     = Id
+  return     = pure
   Id x >>= f = f x
 
 -- | Box monad
@@ -31,6 +36,10 @@ data Box a = Box { unBox :: a }
 
 instance Functor Box where
   fmap f (Box x) = Box (f x)
+
+instance Applicative Box where
+  pure        = Box
+  (<*>)       = ap
 
 instance Monad Box where
   return      = Box
