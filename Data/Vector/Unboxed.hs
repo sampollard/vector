@@ -214,6 +214,7 @@ import Prelude hiding ( length, null,
 import qualified Prelude
 
 import Text.Read     ( Read(..), readListPrecDefault )
+import Data.Semigroup ( Semigroup(..) )
 
 import Data.Monoid   ( Monoid(..) )
 
@@ -243,6 +244,13 @@ instance (Unbox a, Ord a) => Ord (Vector a) where
 
   {-# INLINE (>=) #-}
   xs >= ys = Bundle.cmp (G.stream xs) (G.stream ys) /= LT
+
+instance Unbox a => Semigroup (Vector a) where
+  {-# INLINE (<>) #-}
+  (<>) = (++)
+
+  {-# INLINE sconcat #-}
+  sconcat = G.concatNE
 
 instance Unbox a => Monoid (Vector a) where
   {-# INLINE mempty #-}

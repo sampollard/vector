@@ -176,7 +176,7 @@ import Foreign.ForeignPtr
 import Foreign.Ptr
 import Foreign.Marshal.Array ( advancePtr, copyArray )
 
-import Control.DeepSeq ( NFData )
+import Control.DeepSeq ( NFData(rnf) )
 
 import Control.Monad.ST ( ST )
 import Control.Monad.Primitive
@@ -200,6 +200,7 @@ import qualified Prelude
 import Data.Typeable ( Typeable )
 import Data.Data     ( Data(..) )
 import Text.Read     ( Read(..), readListPrecDefault )
+import Data.Semigroup ( Semigroup(..) )
 
 import Data.Monoid   ( Monoid(..) )
 
@@ -210,7 +211,8 @@ data Vector a = Vector {-# UNPACK #-} !Int
                        {-# UNPACK #-} !(ForeignPtr a)
         deriving ( Typeable )
 
-instance NFData (Vector a)
+instance NFData (Vector a) where
+  rnf (Vector _ _) = ()
 
 instance (Show a, Storable a) => Show (Vector a) where
   showsPrec = G.showsPrec
@@ -295,6 +297,13 @@ instance (Storable a, Ord a) => Ord (Vector a) where
 
   {-# INLINE (>=) #-}
   xs >= ys = Bundle.cmp (G.stream xs) (G.stream ys) /= LT
+
+instance Storable a => Semigroup (Vector a) where
+  {-# INLINE (<>) #-}
+  (<>) = (++)
+
+  {-# INLINE sconcat #-}
+  sconcat = G.concatNE
 
 instance Storable a => Monoid (Vector a) where
   {-# INLINE mempty #-}

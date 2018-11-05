@@ -108,7 +108,7 @@ import qualified Data.Vector.Fusion.Stream.Monadic as S
 import Data.Vector.Fusion.MultiStream.Monadic ( MultiStream(..) )
 #endif /* defined(__GLASGOW_HASKELL_LLVM__) */
 
-import Data.Primitive.Multi
+-- import Data.Primitive.Multi
 
 import Prelude hiding ( length, null,
                         replicate, (++),

@@ -147,7 +147,7 @@ module Data.Vector (
   -- * Conversions
 
   -- ** Lists
-  toList, fromList, fromListN,
+  Data.Vector.toList, Data.Vector.fromList, Data.Vector.fromListN,
 
   -- ** Other vector types
   G.convert,
@@ -266,6 +266,11 @@ instance Ord a => Ord (Vector a) where
   {-# INLINE (>=) #-}
   xs >= ys = Bundle.cmp (G.stream xs) (G.stream ys) /= LT
 
+instance Semigroup (Vector a) where
+  (<>) = mappend
+  {-# INLINE (<>) #-}
+  -- stimes = mconcat
+
 instance Monoid (Vector a) where
   {-# INLINE mempty #-}
   mempty = empty
@@ -323,7 +328,7 @@ instance Foldable.Foldable Vector where
 
 instance Traversable.Traversable Vector where
   {-# INLINE traverse #-}
-  traverse f xs = fromList Applicative.<$> Traversable.traverse f (toList xs)
+  traverse f xs = Data.Vector.fromList Applicative.<$> Traversable.traverse f (toList xs)
 
   {-# INLINE mapM #-}
   mapM = mapM

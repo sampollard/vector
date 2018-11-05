@@ -140,7 +140,7 @@ import qualified Data.Vector.Fusion.Bundle as Bundle
 import           Data.Primitive.ByteArray
 import           Data.Primitive ( Prim, sizeOf )
 
-import Control.DeepSeq ( NFData )
+import Control.DeepSeq ( NFData(rnf) )
 
 import Control.Monad ( liftM )
 import Control.Monad.ST ( ST )
@@ -167,6 +167,7 @@ import Data.Data     ( Data(..) )
 import Text.Read     ( Read(..), readListPrecDefault )
 
 import Data.Monoid   ( Monoid(..) )
+import Data.Semigroup ( Semigroup(..) )
 
 -- | Unboxed vectors of primitive types
 data Vector a = Vector {-# UNPACK #-} !Int
@@ -174,7 +175,8 @@ data Vector a = Vector {-# UNPACK #-} !Int
                        {-# UNPACK #-} !ByteArray
   deriving ( Typeable )
 
-instance NFData (Vector a)
+instance NFData (Vector a) where
+  rnf (Vector _ _ _) = ()
 
 instance (Show a, Prim a) => Show (Vector a) where
   showsPrec = G.showsPrec
@@ -244,6 +246,13 @@ instance (Prim a, Ord a) => Ord (Vector a) where
 
   {-# INLINE (>=) #-}
   xs >= ys = Bundle.cmp (G.stream xs) (G.stream ys) /= LT
+
+instance Prim a => Semigroup (Vector a) where
+  {-# INLINE (<>) #-}
+  (<>) = (++)
+
+  {-# INLINE sconcat #-}
+  sconcat = G.concatNE
 
 instance Prim a => Monoid (Vector a) where
   {-# INLINE mempty #-}
